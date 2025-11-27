@@ -30,7 +30,7 @@ class TextWithImageService:
         self.style_prompts = self._initialize_style_prompts()
         
         # OpenAI configuration
-        self.openai_api_key = "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"
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.openai_model = "gpt-3.5-turbo"
         
         if OPENAI_AVAILABLE and self.openai_api_key:
