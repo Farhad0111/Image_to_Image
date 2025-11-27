@@ -1,0 +1,45 @@
+services:
+  image-processing-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: image-processing-api
+    ports:
+      - "8065:8065"
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      - ./logs:/app/logs  # Optional: for log persistence
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8065/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - image-processing-network
+
+  # Optional: Add nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - image-processing-api
+    restart: unless-stopped
+    networks:
+      - image-processing-network
+    profiles:
+      - with-proxy
+
+networks:
+  image-processing-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local
