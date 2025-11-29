@@ -8,8 +8,13 @@ services:
       - "8065:8065"
     environment:
       - PYTHONPATH=/app
+      - ARK_API_KEY=${ARK_API_KEY:-310e237f-636e-43bc-a59f-1a1c7580965b}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - .env
     volumes:
       - ./logs:/app/logs  # Optional: for log persistence
+      - ./uploads:/app/uploads  # Mount uploads directory
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8065/health"]

@@ -143,10 +143,11 @@ class TextWithImageService:
         if total_pages == 1:
             # Single page story
             content = f"{templates['intro'].format(**story_elements)} {request.story_idea} {templates['ending'].format(**story_elements)}"
-            image_description = f"{self.style_prompts[request.style]}, featuring {request.name} as the main character, {gender_adj} of {request.age} years old, {request.story_idea}"
+            page_title = f"The Adventure of {request.name}"
+            image_description = self._generate_image_description(content, request.name, request.style, 1, request, page_title)
             pages.append(StoryPage(
                 page_number=1,
-                title=f"The Adventure of {request.name}",
+                title=page_title,
                 content=content,
                 image_description=image_description
             ))
@@ -171,7 +172,7 @@ class TextWithImageService:
                     title = f"Chapter {i + 1}"
                     content = f"The story of {request.name} continues with new adventures and discoveries."
                 
-                image_description = f"{self.style_prompts[request.style]}, showing {request.name} ({gender_adj} of {request.age} years old) in scene {i + 1}, {title.lower()}, {request.story_idea}"
+                image_description = self._generate_image_description(content, request.name, request.style, i + 1, request, title)
                 pages.append(StoryPage(
                     page_number=i + 1,
                     title=title,
@@ -236,12 +237,14 @@ class TextWithImageService:
             
             # Create StoryPage objects with image descriptions
             for page_data in story_data["pages"]:
-                # Generate detailed image description based on actual page content
+                # Generate detailed image description based on actual page content with consistent character design
                 image_description = self._generate_image_description(
                     page_data["content"], 
                     request.name, 
                     request.style,
-                    page_data["page_number"]
+                    page_data["page_number"],
+                    request,
+                    page_data["title"]
                 )
                 
                 pages.append(StoryPage(
@@ -258,9 +261,15 @@ class TextWithImageService:
             logger.error(f"OpenAI generation failed: {str(e)}. Falling back to templates.")
             return self._generate_template_story(request)
     
-    def _generate_image_description(self, content: str, character_name: str, style: str, page_number: int) -> str:
-        """Generate detailed image description based on specific page content."""
-        style_prompt = self.style_prompts.get(style, "illustration")
+    def _generate_image_description(self, content: str, character_name: str, style: str, page_number: int, request: TextWithImageRequest = None, page_title: str = None) -> str:
+        """Generate detailed image description based on specific page content, maintaining consistency with cover design."""
+        # Use base character description for consistency across all pages
+        if request:
+            base_character_desc = self._generate_base_character_description(request)
+        else:
+            style_prompt = self.style_prompts.get(style, "illustration")
+            base_character_desc = f"{style_prompt}, featuring {character_name} as the main character"
+        
         content_lower = content.lower()
         
         # Extract detailed scene elements from content
@@ -341,47 +350,72 @@ class TextWithImageService:
             if any(keyword in content_lower for keyword in keywords):
                 emotions_and_mood.append(emotion_desc)
         
-        # Combine all elements into a rich description
-        description_parts = [style_prompt]
-        description_parts.append(f"showing {character_name}")
+        # Create page description similar to cover format
+        scene_elements = []
         
         if character_actions:
-            description_parts.append(character_actions[0])
+            scene_elements.append(character_actions[0])
         
         if objects_and_items:
-            description_parts.append(objects_and_items[0])
+            scene_elements.append(objects_and_items[0])
         
-        description_parts.append(location_found)
+        scene_elements.append(location_found)
         
         if emotions_and_mood:
-            description_parts.append(emotions_and_mood[0])
+            scene_elements.append(emotions_and_mood[0])
         
-        # Add page-specific context based on actual content words
+        # Build description in cover-like format
+        page_description = f"Page {page_number} illustration design. {base_character_desc}. "
+        
+        # Add page title if provided (similar to cover title)
+        if page_title:
+            page_description += f"Page title '{page_title}' prominently featured. "
+        
+        # Add scene description (similar to cover scene)
+        if scene_elements:
+            page_description += f"Page scene depicts {', '.join(scene_elements[:2])}. "
+        else:
+            page_description += "Page scene depicts the story content in an engaging atmosphere. "
+        
+        # Add page-specific content context
         content_words = content.split()
         if len(content_words) > 5:
-            # Extract key descriptive words from content
             key_words = [word for word in content_words if len(word) > 4 and word.lower() not in 
                         ['there', 'where', 'their', 'would', 'could', 'should', 'about', 'after', 'before']]
-            if key_words[:2]:  # Use first 2 meaningful words
-                description_parts.append(f"capturing the essence of '{' '.join(key_words[:2]).lower()}'")
+            if key_words[:2]:
+                page_description += f"Story moment: '{' '.join(key_words[:2]).lower()}'. "
         
-        description_parts.append(f"page {page_number} illustration")
+        # End similar to cover format
+        page_description += "Colorful, engaging design suitable for children's book"
         
-        return ", ".join(description_parts)
+        return page_description
     
-    def _generate_cover_image_description(self, request: TextWithImageRequest) -> str:
-        """Generate a book cover description based on story details."""
+    def _generate_base_character_description(self, request: TextWithImageRequest) -> str:
+        """Generate base character description for consistent visual design across all images."""
         style_prompt = self.style_prompts.get(request.style, "illustration")
         gender_adj = self._get_gender_adjective(request.gender, request.language).lower()
         
-        # Create cover description
+        # Create consistent character design description
+        base_character_desc = (
+            f"{style_prompt}, featuring {request.name} as the main character, "
+            f"{gender_adj} of {request.age} years old. "
+            f"Character design: consistent appearance with {request.style.lower()} artistic style, "
+            f"same facial features, hair style, clothing, and proportions throughout. "
+            f"Story theme: {request.story_idea}"
+        )
+        
+        return base_character_desc
+    
+    def _generate_cover_image_description(self, request: TextWithImageRequest) -> str:
+        """Generate a book cover description based on story details."""
+        base_character_desc = self._generate_base_character_description(request)
+        
+        # Create cover description using base character design
         cover_description = (
-            f"Book cover design in {style_prompt.lower()} style, featuring {request.name}, "
-            f"{gender_adj} of {request.age} years old, as the main character. "
+            f"Book cover design. {base_character_desc}. "
             f"Title '{self._generate_story_title(request.name)}' prominently displayed at the top. "
-            f"Cover scene depicts the story theme: {request.story_idea}. "
-            f"Colorful, eye-catching design suitable for children's book, "
-            f"with {request.style.lower()} artistic style, inviting and magical atmosphere"
+            f"Cover scene depicts the main story theme in an inviting and magical atmosphere. "
+            f"Colorful, eye-catching design suitable for children's book"
         )
         
         return cover_description
@@ -410,11 +444,12 @@ class TextWithImageService:
             content = f"Once upon a time, {request.name} discovered something magical. {request.story_idea}. The adventure changed everything forever."
             content = " ".join(content.split()[:25])  # Limit to 25 words
             
+            page_title = f"The Adventure of {request.name}"
             pages.append(StoryPage(
                 page_number=1,
-                title=f"The Adventure of {request.name}",
+                title=page_title,
                 content=content,
-                image_description=self._generate_image_description(content, request.name, request.style, 1)
+                image_description=self._generate_image_description(content, request.name, request.style, 1, request, page_title)
             ))
         else:
             # Multi-page story
@@ -435,11 +470,12 @@ class TextWithImageService:
                 # Limit to 25 words
                 content = " ".join(content.split()[:25])
                 
+                page_title = f"Chapter {i + 1}"
                 pages.append(StoryPage(
                     page_number=i + 1,
-                    title=f"Chapter {i + 1}",
+                    title=page_title,
                     content=content,
-                    image_description=self._generate_image_description(content, request.name, request.style, i + 1)
+                    image_description=self._generate_image_description(content, request.name, request.style, i + 1, request, page_title)
                 ))
         
         return pages

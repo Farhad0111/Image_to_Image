@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.services.Text_with_image.Text_with_image_Route import router as text_with_image_router
+from app.services.Image_to_Image.Image_to_Image_Route import router as image_to_image_router
 import os
 from dotenv import load_dotenv
 
@@ -9,6 +10,7 @@ load_dotenv()
 
 # Create necessary directories
 os.makedirs("uploads/text_with_image", exist_ok=True)
+os.makedirs("uploads/image_to_image", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
 
 # Create FastAPI app
@@ -31,6 +33,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(text_with_image_router, prefix="/api/v1")
+app.include_router(image_to_image_router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
@@ -40,7 +43,8 @@ async def root():
         "version": "1.0.0",
         "docs": "/docs",
         "services": {
-            "text_with_image": "/api/v1/text-with-image"
+            "text_with_image": "/api/v1/text-with-image",
+            "image_to_image": "/api/v1/image-to-image"
         }
     }
 
