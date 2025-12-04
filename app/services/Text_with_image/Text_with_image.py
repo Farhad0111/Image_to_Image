@@ -1,6 +1,7 @@
 import time
 import logging
 import os
+import base64
 from typing import Dict, List, Optional
 try:
     import openai
@@ -8,6 +9,13 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
     logging.warning("OpenAI package not available. Install with: pip install openai")
+
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    logging.warning("PIL package not available. Install with: pip install Pillow")
 from .Text_with_image_Schema import (
     TextWithImageRequest,
     GeneratedStory,
@@ -125,7 +133,7 @@ class TextWithImageService:
     
 
     
-    def _generate_story_content(self, request: TextWithImageRequest) -> List[StoryPage]:
+    def _generate_story_content(self, request: TextWithImageRequest, uploaded_image_path: Optional[str] = None) -> List[StoryPage]:
         """Generate story content based on user inputs."""
         pages = []
         total_pages = self._determine_pages_count(request.chapter_number)
@@ -144,7 +152,7 @@ class TextWithImageService:
             # Single page story
             content = f"{templates['intro'].format(**story_elements)} {request.story_idea} {templates['ending'].format(**story_elements)}"
             page_title = f"The Adventure of {request.name}"
-            image_description = self._generate_image_description(content, request.name, request.style, 1, request, page_title)
+            image_description = self._generate_image_description(content, request.name, request.style, 1, request, page_title, uploaded_image_path)
             pages.append(StoryPage(
                 page_number=1,
                 title=page_title,
@@ -172,7 +180,7 @@ class TextWithImageService:
                     title = f"Chapter {i + 1}"
                     content = f"The story of {request.name} continues with new adventures and discoveries."
                 
-                image_description = self._generate_image_description(content, request.name, request.style, i + 1, request, title)
+                image_description = self._generate_image_description(content, request.name, request.style, i + 1, request, title, uploaded_image_path)
                 pages.append(StoryPage(
                     page_number=i + 1,
                     title=title,
@@ -182,14 +190,14 @@ class TextWithImageService:
         
         return pages
     
-    def _generate_openai_story(self, request: TextWithImageRequest) -> List[StoryPage]:
+    def _generate_openai_story(self, request: TextWithImageRequest, uploaded_image_path: Optional[str] = None) -> List[StoryPage]:
         """Generate story content using OpenAI API with 25-word limit per page."""
         pages = []
         total_pages = self._determine_pages_count(request.chapter_number)
         
         if not OPENAI_AVAILABLE or not self.openai_client:
             # Fallback to template-based generation
-            return self._generate_template_story(request)
+            return self._generate_template_story(request, uploaded_image_path)
         
         try:
             # Create OpenAI prompt for story generation
@@ -244,7 +252,8 @@ class TextWithImageService:
                     request.style,
                     page_data["page_number"],
                     request,
-                    page_data["title"]
+                    page_data["title"],
+                    uploaded_image_path
                 )
                 
                 pages.append(StoryPage(
@@ -259,13 +268,13 @@ class TextWithImageService:
             
         except Exception as e:
             logger.error(f"OpenAI generation failed: {str(e)}. Falling back to templates.")
-            return self._generate_template_story(request)
+            return self._generate_template_story(request, uploaded_image_path)
     
-    def _generate_image_description(self, content: str, character_name: str, style: str, page_number: int, request: TextWithImageRequest = None, page_title: str = None) -> str:
+    def _generate_image_description(self, content: str, character_name: str, style: str, page_number: int, request: TextWithImageRequest = None, page_title: str = None, uploaded_image_path: Optional[str] = None) -> str:
         """Generate detailed image description based on specific page content, maintaining consistency with cover design."""
         # Use base character description for consistency across all pages
         if request:
-            base_character_desc = self._generate_base_character_description(request)
+            base_character_desc = self._generate_base_character_description_with_image(request, uploaded_image_path)
         else:
             style_prompt = self.style_prompts.get(style, "illustration")
             base_character_desc = f"{style_prompt}, featuring {character_name} as the main character"
@@ -367,10 +376,6 @@ class TextWithImageService:
         # Build description in cover-like format
         page_description = f"Page {page_number} illustration design. {base_character_desc}. "
         
-        # Add page title if provided (similar to cover title)
-        if page_title:
-            page_description += f"Page title '{page_title}' prominently featured. "
-        
         # Add scene description (similar to cover scene)
         if scene_elements:
             page_description += f"Page scene depicts {', '.join(scene_elements[:2])}. "
@@ -406,9 +411,153 @@ class TextWithImageService:
         
         return base_character_desc
     
+    def _encode_image_to_base64(self, image_path: str) -> str:
+        """Encode image to base64 for OpenAI Vision API."""
+        try:
+            with open(image_path, "rb") as image_file:
+                return base64.b64encode(image_file.read()).decode('utf-8')
+        except Exception as e:
+            logger.error(f"Error encoding image to base64: {str(e)}")
+            return ""
+    
+    def _analyze_character_features(self, image_path: str) -> Dict[str, str]:
+        """Analyze uploaded image to extract character features using OpenAI Vision API."""
+        if not self.openai_client or not image_path:
+            logger.warning("OpenAI client not available or no image path provided")
+            return {}
+        
+        try:
+            # Encode image to base64
+            base64_image = self._encode_image_to_base64(image_path)
+            if not base64_image:
+                return {}
+            
+            # Prepare the prompt for character analysis
+            analysis_prompt = """
+            Analyze this image of a person and extract the following physical characteristics:
+            1. Skin color (be specific: light, medium, tan, brown, dark, etc.)
+            2. Hair color (be specific: blonde, brown, black, red, gray, etc.)
+            3. Eyebrow color (usually matches hair color)
+            
+            Please provide a JSON response with these exact keys:
+            - skin_color
+            - hair_color
+            - eyebrow_color
+            
+            Be descriptive but concise. Focus on the main character in the image.
+            """
+            
+            # Make API call to OpenAI Vision
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": analysis_prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=300
+            )
+            
+            # Extract the response
+            analysis_text = response.choices[0].message.content
+            logger.info(f"Character analysis result: {analysis_text}")
+            
+            # Try to extract features from the response
+            features = {}
+            lines = analysis_text.lower().split('\n')
+            
+            for line in lines:
+                if 'skin' in line and 'color' in line:
+                    # Extract skin color
+                    parts = line.split(':')
+                    if len(parts) > 1:
+                        features['skin_color'] = parts[1].strip().replace('"', '').replace(',', '')
+                elif 'hair' in line and 'color' in line:
+                    # Extract hair color
+                    parts = line.split(':')
+                    if len(parts) > 1:
+                        features['hair_color'] = parts[1].strip().replace('"', '').replace(',', '')
+                elif 'eyebrow' in line and 'color' in line:
+                    # Extract eyebrow color
+                    parts = line.split(':')
+                    if len(parts) > 1:
+                        features['eyebrow_color'] = parts[1].strip().replace('"', '').replace(',', '')
+            
+            # Fallback: if eyebrow color not specified, assume it matches hair color
+            if 'hair_color' in features and 'eyebrow_color' not in features:
+                features['eyebrow_color'] = features['hair_color']
+            
+            logger.info(f"Extracted character features: {features}")
+            return features
+            
+        except Exception as e:
+            logger.error(f"Error analyzing character features: {str(e)}")
+            return {}
+    
+    def _generate_base_character_description_with_image(self, request: TextWithImageRequest, image_path: Optional[str] = None) -> str:
+        """Generate base character description incorporating features from uploaded image."""
+        style_prompt = self.style_prompts.get(request.style, "illustration")
+        gender_adj = self._get_gender_adjective(request.gender, request.language).lower()
+        
+        # Analyze character features from image if provided
+        character_features = {}
+        if image_path:
+            character_features = self._analyze_character_features(image_path)
+        
+        # Build character description with or without image features
+        base_desc = (
+            f"{style_prompt}, featuring {request.name} as the main character, "
+            f"{gender_adj} of {request.age} years old."
+        )
+        
+        # Add physical features if extracted from image
+        if character_features:
+            feature_desc = []
+            if character_features.get('skin_color'):
+                feature_desc.append(f"{character_features['skin_color']} skin")
+            if character_features.get('hair_color'):
+                feature_desc.append(f"{character_features['hair_color']} hair")
+            if character_features.get('eyebrow_color'):
+                feature_desc.append(f"{character_features['eyebrow_color']} eyebrows")
+            
+            if feature_desc:
+                base_desc += f" Character has {', '.join(feature_desc)}."
+        
+        # Add consistency requirements
+        base_desc += (
+            f" Character design: consistent appearance with {request.style.lower()} artistic style, "
+            f"same facial features, hair style, clothing, and proportions throughout. "
+            f"Story theme: {request.story_idea}"
+        )
+        
+        return base_desc
+    
     def _generate_cover_image_description(self, request: TextWithImageRequest) -> str:
         """Generate a book cover description based on story details."""
         base_character_desc = self._generate_base_character_description(request)
+        
+        # Create cover description using base character design
+        cover_description = (
+            f"Book cover design. {base_character_desc}. "
+            f"Title '{self._generate_story_title(request.name)}' prominently displayed at the top. "
+            f"Cover scene depicts the main story theme in an inviting and magical atmosphere. "
+            f"Colorful, eye-catching design suitable for children's book"
+        )
+        
+        return cover_description
+    
+    def _generate_cover_image_description_with_image(self, request: TextWithImageRequest, image_path: Optional[str] = None) -> str:
+        """Generate a book cover description incorporating features from uploaded image."""
+        base_character_desc = self._generate_base_character_description_with_image(request, image_path)
         
         # Create cover description using base character design
         cover_description = (
@@ -424,7 +573,7 @@ class TextWithImageService:
         """Generate story title based on character name."""
         return f"The Amazing Adventures of {character_name}"
     
-    def _generate_template_story(self, request: TextWithImageRequest) -> List[StoryPage]:
+    def _generate_template_story(self, request: TextWithImageRequest, uploaded_image_path: Optional[str] = None) -> List[StoryPage]:
         """Fallback method using templates when OpenAI is not available."""
         pages = []
         total_pages = self._determine_pages_count(request.chapter_number)
@@ -449,7 +598,7 @@ class TextWithImageService:
                 page_number=1,
                 title=page_title,
                 content=content,
-                image_description=self._generate_image_description(content, request.name, request.style, 1, request, page_title)
+                image_description=self._generate_image_description(content, request.name, request.style, 1, request, page_title, uploaded_image_path)
             ))
         else:
             # Multi-page story
@@ -475,7 +624,7 @@ class TextWithImageService:
                     page_number=i + 1,
                     title=page_title,
                     content=content,
-                    image_description=self._generate_image_description(content, request.name, request.style, i + 1, request, page_title)
+                    image_description=self._generate_image_description(content, request.name, request.style, i + 1, request, page_title, uploaded_image_path)
                 ))
         
         return pages
@@ -486,7 +635,7 @@ class TextWithImageService:
             logger.info(f"Generating story for {request.name} with {request.chapter_number} chapters")
             
             # Generate story pages using OpenAI
-            pages = self._generate_openai_story(request)
+            pages = self._generate_openai_story(request, uploaded_image_path)
             
             # Create the complete story
             story = GeneratedStory(
@@ -497,7 +646,7 @@ class TextWithImageService:
                 style=request.style,
                 language=request.language,
                 total_chapters=self._determine_pages_count(request.chapter_number),
-                cover_image_description=self._generate_cover_image_description(request),
+                cover_image_description=self._generate_cover_image_description_with_image(request, uploaded_image_path),
                 pages=pages
             )
             
